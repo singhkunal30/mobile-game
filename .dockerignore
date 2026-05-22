@@ -1,0 +1,13 @@
+node_modules
+*/node_modules
+*/dist
+.git
+.gitignore
+.idea
+.vscode
+android
+ios
+*.log
+README.md
+docker-compose.yml
+client

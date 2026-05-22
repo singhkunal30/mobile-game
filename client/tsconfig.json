@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2020",
+    "jsx": "preserve",
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src/**/*"],
+  "references": [{ "path": "../shared" }]
+}

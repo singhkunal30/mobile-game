@@ -1,0 +1,50 @@
+import { Server } from "colyseus";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+import { monitor } from "@colyseus/monitor";
+import express from "express";
+import http from "http";
+import cors from "cors";
+import { HeistRoom } from "./rooms/HeistRoom";
+import { LobbyRoom } from "./rooms/LobbyRoom";
+
+const PORT = Number(process.env.PORT) || 2567;
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get("/", (_req, res) => {
+  res.json({
+    name: "Blackout Protocol Server",
+    version: "0.1.0",
+    status: "ok",
+    rooms: ["lobby", "heist"],
+  });
+});
+
+app.get("/healthz", (_req, res) => res.json({ ok: true, ts: Date.now() }));
+
+const server = http.createServer(app);
+
+const gameServer = new Server({
+  transport: new WebSocketTransport({ server }),
+});
+
+gameServer.define("lobby", LobbyRoom);
+gameServer.define("heist", HeistRoom)
+  .filterBy(["mode"]); // matchmaking by mode
+
+// Dev monitor — disable in production via env
+if (process.env.NODE_ENV !== "production") {
+  app.use("/monitor", monitor());
+}
+
+gameServer.listen(PORT).then(() => {
+  console.log(`[server] Blackout Protocol listening on :${PORT}`);
+  console.log(`[server] Monitor:  http://localhost:${PORT}/monitor`);
+});
+
+process.on("SIGINT", () => {
+  console.log("[server] shutting down");
+  gameServer.gracefullyShutdown().then(() => process.exit(0));
+});

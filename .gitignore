@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+.env
+.env.local
+.vite/
+.cache/
+coverage/
+.idea/
+.vscode/
+android/
+ios/
+*.tsbuildinfo
+.pnpm-store/

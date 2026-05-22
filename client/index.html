@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0d12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Blackout Protocol</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; padding: 0; background: #0a0d12; overflow: hidden; height: 100%; width: 100%; }
+    body { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #d9e2ec; }
+    #game { position: fixed; inset: 0; }
+    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+    #overlay .panel { background: rgba(10,13,18,0.92); border: 1px solid #2a3a4c; padding: 20px 22px; border-radius: 10px; pointer-events: auto; min-width: 280px; max-width: 90vw; }
+    h1 { font-size: 18px; margin: 0 0 8px; letter-spacing: 2px; color: #6ee7b7; }
+    p { font-size: 13px; line-height: 1.4; margin: 6px 0; color: #94a3b8; }
+    input, select, button { background: #0f1721; color: #e2e8f0; border: 1px solid #334155; padding: 8px 10px; border-radius: 6px; font: inherit; }
+    button { cursor: pointer; }
+    button.primary { background: #16a34a; border-color: #16a34a; color: #0a0d12; font-weight: 700; }
+    button.primary:active { transform: translateY(1px); }
+    .row { display: flex; gap: 8px; margin: 8px 0; }
+    .role-pick { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .role-pick button { padding: 10px 8px; text-align: left; font-size: 12px; }
+    .role-pick button.sel { border-color: #6ee7b7; background: #122218; }
+    label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="overlay"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
