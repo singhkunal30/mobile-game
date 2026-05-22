@@ -20,6 +20,7 @@
     "start:server": "npm run start --workspace=server",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up",
+    "deploy:fly": "bash scripts/deploy-fly.sh",
     "clean": "rm -rf */dist */node_modules node_modules"
   },
   "devDependencies": {

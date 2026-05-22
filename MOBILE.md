@@ -29,10 +29,18 @@ Before building, point the app at your production multiplayer server:
 
 ```bash
 # in /client
-echo "VITE_SERVER_URL=wss://your-server.example.com:2567" > .env.local
+echo "VITE_SERVER_URL=wss://your-server.example.com" > .env.local
 ```
 
-If you skip this, the app will try `ws://<hostname>:2567` at runtime, which is fine for LAN testing but won't work from a phone on cellular.
+If you skip this, the app will try `ws://<hostname>:2567` at runtime, which is fine for LAN testing but **won't work from a phone on cellular**.
+
+**Don't have a hosted server yet?** Deploy it in 60 seconds:
+```bash
+# from repo root
+npm run deploy:fly
+# → prints "wss://blackout-protocol.fly.dev"
+```
+Then use that URL above. Full deploy guide: [DEPLOY.md](./DEPLOY.md).
 
 ## Build Android APK
 

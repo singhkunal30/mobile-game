@@ -1,0 +1,45 @@
+# Fly.io config for Blackout Protocol server.
+# Deploy:  flyctl launch  (first time, creates the app)
+#          flyctl deploy  (subsequent updates)
+
+app = "blackout-protocol"
+primary_region = "iad"   # change to ord, sjc, lhr, fra, syd etc. for your audience
+
+[build]
+  dockerfile = "server/Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "2567"
+
+# Public HTTP/WebSocket service.
+# Fly's edge auto-handles TLS termination and WebSocket upgrade,
+# so clients connect via wss://<app>.fly.dev — no extra config needed.
+[http_service]
+  internal_port = 2567
+  force_https = true
+  auto_stop_machines = "off"     # multiplayer rooms must stay warm
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+
+# Small VM is plenty for ~10-15 concurrent heist rooms (~50 players).
+# Scale up via:  flyctl scale vm shared-cpu-2x --memory 1024
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
+
+# Disable the dev /monitor endpoint in prod via NODE_ENV above.

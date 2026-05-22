@@ -8,6 +8,11 @@ node_modules
 android
 ios
 *.log
+*.tsbuildinfo
 README.md
+MOBILE.md
 docker-compose.yml
 client
+.github
+.dockerignore
+fly.toml

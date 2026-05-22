@@ -164,14 +164,19 @@ npm run cap:add:ios     && npm run cap:open:ios       # Xcode → Run (Mac requi
 
 ## Deployment
 
-The included `Dockerfile` produces a tiny multi-stage image. Recommended hosts:
+**One command:** `npm run deploy:fly` — see [DEPLOY.md](./DEPLOY.md) for the full story including Railway, Render, Cloud Run, DigitalOcean, and DIY-VPS recipes.
 
-| Host | Notes |
-| --- | --- |
-| **Fly.io** | One-click WebSocket support, global edge, persistent volumes free tier — best for indie multiplayer |
-| **Railway** | Trivial deploy from this repo; tweak the start command to `node server/dist/index.js` |
-| **GCP Cloud Run** | Works once you enable HTTP/2 + WebSocket; autoscale-to-zero |
-| **DIY VPS + Caddy** | Caddy auto-TLS handles WSS termination in 3 lines of Caddyfile |
+```bash
+curl -L https://fly.io/install.sh | sh    # install flyctl, once
+flyctl auth signup                         # free tier
+npm run deploy:fly                         # ← deploys, prints wss:// URL
+```
+
+Then bake the URL into the mobile app:
+```bash
+echo "VITE_SERVER_URL=wss://blackout-protocol.fly.dev" > client/.env.local
+npm run build:client && cd client && npm run cap:sync
+```
 
 For multi-region scaling, run multiple Colyseus nodes behind a load balancer sharing `@colyseus/redis-presence`; matchmaking will route the same room to the right node.
 
