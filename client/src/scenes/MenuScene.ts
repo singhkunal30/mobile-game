@@ -32,6 +32,7 @@ export class MenuScene extends Phaser.Scene {
     overlay.innerHTML = "";
     const panel = document.createElement("div");
     panel.className = "panel";
+    const sfxOn = localStorage.getItem("sfxEnabled") !== "0";
     panel.innerHTML = `
       <h1>BLACKOUT PROTOCOL</h1>
       <p>Infiltrate. Loot. Extract. Don't get caught.</p>
@@ -44,6 +45,13 @@ export class MenuScene extends Phaser.Scene {
       <p id="modline" style="margin-top:8px;color:#a78bfa"></p>
       <div class="row" style="margin-top:14px">
         <button id="join" class="primary" style="flex:1">JOIN HEIST</button>
+        <button id="settings" title="Settings">⚙</button>
+      </div>
+      <div id="settings-panel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #334155">
+        <label style="display:flex;align-items:center;gap:8px;color:#cbd5e1;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="sfx" ${sfxOn ? "checked" : ""} /> Sound effects
+        </label>
+        <p style="font-size:10px;color:#475569;margin-top:6px">v0.1.0 · Build ${(new Date()).toISOString().slice(0,10)}</p>
       </div>
       <p style="margin-top:14px;font-size:11px;color:#475569">
         Test multiplayer: open multiple browser tabs to this URL.<br/>
@@ -69,6 +77,14 @@ export class MenuScene extends Phaser.Scene {
 
     const mod = MISSION_MODIFIERS[Math.floor(Math.random() * MISSION_MODIFIERS.length)];
     (panel.querySelector("#modline") as HTMLElement).innerText = `Active modifier: ${mod.name} — ${mod.desc} (server picks final)`;
+
+    const settingsBtn = panel.querySelector("#settings") as HTMLButtonElement;
+    const settingsPanel = panel.querySelector("#settings-panel") as HTMLElement;
+    settingsBtn.onclick = () => {
+      settingsPanel.style.display = settingsPanel.style.display === "none" ? "block" : "none";
+    };
+    const sfxCb = panel.querySelector("#sfx") as HTMLInputElement;
+    sfxCb.onchange = () => localStorage.setItem("sfxEnabled", sfxCb.checked ? "1" : "0");
 
     const statusEl = panel.querySelector("#status") as HTMLElement;
     const joinBtn = panel.querySelector("#join") as HTMLButtonElement;

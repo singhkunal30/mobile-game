@@ -6,6 +6,7 @@ import http from "http";
 import cors from "cors";
 import { HeistRoom } from "./rooms/HeistRoom";
 import { LobbyRoom } from "./rooms/LobbyRoom";
+import { log } from "./util/Logger";
 
 const PORT = Number(process.env.PORT) || 2567;
 
@@ -40,11 +41,13 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 gameServer.listen(PORT).then(() => {
-  console.log(`[server] Blackout Protocol listening on :${PORT}`);
-  console.log(`[server] Monitor:  http://localhost:${PORT}/monitor`);
+  log.info("server_listen", { port: PORT, env: process.env.NODE_ENV || "dev" });
 });
 
 process.on("SIGINT", () => {
-  console.log("[server] shutting down");
+  log.info("server_shutdown");
   gameServer.gracefullyShutdown().then(() => process.exit(0));
 });
+
+process.on("uncaughtException", (e) => log.error("uncaught", { err: String(e?.stack || e) }));
+process.on("unhandledRejection", (e: any) => log.error("unhandled", { err: String(e?.stack || e) }));

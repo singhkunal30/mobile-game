@@ -17,6 +17,7 @@ import { generateMap, GeneratedMap } from "../sim/MapGenerator";
 import { moveCircle, dist, angleBetween, dist2 } from "../sim/Physics";
 import { AIController } from "../sim/AIController";
 import { AIDirector } from "../sim/AIDirector";
+import { log } from "../util/Logger";
 
 interface PendingInput {
   seq: number;
@@ -171,6 +172,12 @@ export class HeistRoom extends Room<HeistState> {
     this.state.alarmHeat = 0;
     this.state.score = 0;
     this.spawnInitialGuards();
+    log.info("match_start", {
+      roomId: this.roomId,
+      players: this.state.players.size,
+      modifier: this.state.modifier,
+      seed: this.state.map.seed,
+    });
   }
 
   private endMatch(success: boolean, reason: string) {
@@ -181,6 +188,17 @@ export class HeistRoom extends Room<HeistState> {
       success,
       score: this.state.score,
       reason,
+    });
+    log.info("match_end", {
+      roomId: this.roomId,
+      success,
+      reason,
+      score: this.state.score,
+      extracted: this.state.extractedCount,
+      players: this.state.players.size,
+      durationMs: Date.now() - this.state.tStart,
+      modifier: this.state.modifier,
+      alarmLevel: this.state.alarmLevel,
     });
     // Auto-close room after a brief delay
     this.clock.setTimeout(() => this.disconnect(), 6000);

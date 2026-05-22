@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm install --workspaces --include-workspace-root
+      - run: npm run build:shared
+      - run: npm run build:server
+      - run: npm run build:client
+      - name: Smoke test
+        run: |
+          (npm run start:server &) && sleep 3
+          npm run smoke -w server
+          pkill -f "dist/index.js" || true

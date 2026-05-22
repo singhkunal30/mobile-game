@@ -4,8 +4,9 @@ import { NetworkManager } from "../net/NetworkManager";
 import { VirtualJoystick } from "../controls/VirtualJoystick";
 import { TouchButton } from "../controls/TouchButton";
 import { PingWheel } from "../controls/PingWheel";
+import { SfxManager } from "../audio/SfxManager";
 import {
-  TILE_SIZE, MAP_WIDTH, MAP_HEIGHT,
+  TILE_SIZE,
   GUARD_VIEW_RANGE, GUARD_VIEW_ANGLE_DEG,
   ROLE_DEFS,
 } from "@blackout/shared";
@@ -35,6 +36,7 @@ export class GameScene extends Phaser.Scene {
   private abilityBtn!: TouchButton;
   private sprintBtn!: TouchButton;
   private pingWheel!: PingWheel;
+  private sfx!: SfxManager;
 
   private mapLayer!: Phaser.GameObjects.Graphics;
   private overlayLayer!: Phaser.GameObjects.Graphics;
@@ -53,6 +55,12 @@ export class GameScene extends Phaser.Scene {
   private mapH = 0;
   private myId: string = "";
   private sprintHold = false;
+  private interactingArc!: Phaser.GameObjects.Graphics;
+
+  // Prediction (Phase 7 hook): we keep the last sent input dir so we can
+  // pre-extrapolate the local player visually between server snapshots.
+  private predictedDx = 0;
+  private predictedDy = 0;
 
   constructor() { super("Game"); }
 
@@ -65,60 +73,54 @@ export class GameScene extends Phaser.Scene {
     this.fxLayer = this.add.container(0, 0).setDepth(50);
     this.extractGfx = this.add.graphics().setDepth(2);
     this.extractProgressGfx = this.add.graphics().setDepth(3);
+    this.interactingArc = this.add.graphics().setDepth(60);
 
+    this.sfx = new SfxManager(this);
     this.pingWheel = new PingWheel(this);
     this.setupTouchUI();
 
-    // Launch HUD scene
     this.scene.launch("HUD", { room: this.room });
 
-    // Wire networked state listeners
     const s = this.room.state as any;
     if (s.map?.tiles?.length) this.applyMap();
+
     s.listen?.("phase", (v: string) => {
       if (v === "ended") this.handleEnd();
+      if (v === "lockdown") this.cameras.main.flash(400, 220, 60, 60);
     });
 
-    // Map may arrive after join — wait one tick
-    this.time.delayedCall(200, () => this.applyMap());
+    this.time.delayedCall(120, () => this.applyMap());
 
-    // Players add/remove
     s.players.onAdd((p: any, id: string) => this.addPlayer(p, id));
     s.players.onRemove((_p: any, id: string) => this.removePlayer(id));
     s.players.forEach((p: any, id: string) => this.addPlayer(p, id));
 
-    // Guards
     s.guards.onAdd((g: any, id: string) => this.addGuard(g, id));
     s.guards.onRemove((_g: any, id: string) => this.removeGuard(id));
     s.guards.forEach((g: any, id: string) => this.addGuard(g, id));
 
-    // Loot
     s.loot.onAdd((l: any, id: string) => this.addLoot(l, id));
     s.loot.onRemove((_l: any, id: string) => { this.loot.get(id)?.destroy(); this.loot.delete(id); });
     s.loot.forEach((l: any, id: string) => this.addLoot(l, id));
 
-    // Doors
     s.doors.onAdd((d: any, id: string) => this.addDoor(d, id));
     s.doors.onRemove((_d: any, id: string) => { this.doors.get(id)?.destroy(); this.doors.delete(id); });
     s.doors.forEach((d: any, id: string) => this.addDoor(d, id));
 
-    // Send ready immediately so single player flow works
     NetworkManager.instance.sendReady(true);
-
-    // Events
     NetworkManager.instance.onEvent = (ev) => this.handleEvent(ev);
 
-    // Camera follow my player when it appears
     this.time.delayedCall(300, () => this.attachCamera());
 
-    // Two-finger tap on right side opens ping wheel (long press alt)
+    // Right-side tap (above buttons) opens ping wheel at world cursor
     this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
       if (p.x > this.scale.width * 0.55 && p.y < this.scale.height * 0.5) {
-        const cam = this.cameras.main;
-        const wx = p.worldX, wy = p.worldY;
-        this.pingWheel.open(p.x, p.y, wx, wy);
+        this.pingWheel.open(p.x, p.y, p.worldX, p.worldY);
       }
     });
+
+    // Resume the audio context on first user gesture (mobile autoplay policy)
+    this.input.once("pointerdown", () => this.sfx.unlock());
   }
 
   private setupTouchUI() {
@@ -148,6 +150,25 @@ export class GameScene extends Phaser.Scene {
       this.abilityBtn.setPosition(W - 150, H - 130);
       this.sprintBtn.setPosition(W - 70, H - 180);
     });
+
+    // Keyboard fallback for desktop testing
+    this.input.keyboard?.on("keydown-E", () => this.queueInteract());
+    this.input.keyboard?.on("keydown-Q", () => this.queueAbility());
+    this.input.keyboard?.on("keydown-SHIFT", () => { this.sprintHold = true; this.sprintBtn.setLabel("SPRT*"); });
+    this.input.keyboard?.on("keyup-SHIFT", () => { this.sprintHold = false; this.sprintBtn.setLabel("SPRT"); });
+  }
+
+  private kbVec(): { dx: number; dy: number } {
+    const k = this.input.keyboard;
+    if (!k) return { dx: 0, dy: 0 };
+    let dx = 0, dy = 0;
+    if (k.checkDown(k.addKey("A"), 0) || k.checkDown(k.addKey("LEFT"), 0)) dx -= 1;
+    if (k.checkDown(k.addKey("D"), 0) || k.checkDown(k.addKey("RIGHT"), 0)) dx += 1;
+    if (k.checkDown(k.addKey("W"), 0) || k.checkDown(k.addKey("UP"), 0)) dy -= 1;
+    if (k.checkDown(k.addKey("S"), 0) || k.checkDown(k.addKey("DOWN"), 0)) dy += 1;
+    const m = Math.hypot(dx, dy);
+    if (m > 1) { dx /= m; dy /= m; }
+    return { dx, dy };
   }
 
   private pendingInteract = false;
@@ -160,6 +181,7 @@ export class GameScene extends Phaser.Scene {
     this.interpolateEntities(deltaMs);
     this.drawGuardVision();
     this.drawExtractionProgress();
+    this.drawInteractionProgress();
     this.cleanupPings(_time);
 
     const now = Date.now();
@@ -172,12 +194,17 @@ export class GameScene extends Phaser.Scene {
 
   private inputSendAccum = 0;
   private sendInput() {
-    // 30 Hz input rate
     this.inputSendAccum += this.game.loop.delta;
     if (this.inputSendAccum < 33) return;
     this.inputSendAccum = 0;
-    const dx = this.joystick.vx;
-    const dy = this.joystick.vy;
+    let dx = this.joystick.vx;
+    let dy = this.joystick.vy;
+    if (Math.hypot(dx, dy) < 0.05) {
+      const k = this.kbVec();
+      dx = k.dx; dy = k.dy;
+    }
+    this.predictedDx = dx;
+    this.predictedDy = dy;
     NetworkManager.instance.sendInput({
       dx, dy,
       sprint: this.sprintHold,
@@ -192,20 +219,18 @@ export class GameScene extends Phaser.Scene {
   private applyMap() {
     const s = this.room.state as any;
     if (!s.map?.tiles?.length) return;
-    if (this.mapW !== 0) return; // already drawn
+    if (this.mapW !== 0) return;
     this.mapW = s.map.width;
     this.mapH = s.map.height;
     this.mapTiles = s.map.tiles.map((r: any) => r.row);
     this.drawMap();
 
-    // Extraction overlay
     this.extractGfx.clear();
     this.extractGfx.fillStyle(COLOR_EXTRACT, 0.22);
     this.extractGfx.fillRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
     this.extractGfx.lineStyle(2, COLOR_EXTRACT, 0.8);
     this.extractGfx.strokeRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
 
-    // World bounds for camera
     this.cameras.main.setBounds(0, 0, this.mapW * TILE_SIZE, this.mapH * TILE_SIZE);
   }
 
@@ -231,8 +256,6 @@ export class GameScene extends Phaser.Scene {
       }
     }
   }
-
-  // ===== Entities =====
 
   private addPlayer(p: any, id: string) {
     const gfx = this.add.graphics().setDepth(20);
@@ -263,25 +286,22 @@ export class GameScene extends Phaser.Scene {
   private drawPlayer(ent: RenderEntity, p: any, isLocal: boolean) {
     const g = ent.gfx;
     g.clear();
-    const x = ent.serverX, y = ent.serverY;
     if (p.status === "extracted") return;
     const fill = isLocal ? 0x6ee7b7 : 0x60a5fa;
     g.fillStyle(p.status === "downed" ? 0x64748b : fill, 0.95);
-    g.fillCircle(x, y, 12);
+    g.fillCircle(ent.serverX, ent.serverY, 12);
     g.lineStyle(2, 0x0a0d12, 1);
-    g.strokeCircle(x, y, 12);
-    // Facing tick
+    g.strokeCircle(ent.serverX, ent.serverY, 12);
     g.lineStyle(2, 0x0a0d12, 1);
     g.beginPath();
-    g.moveTo(x, y);
-    g.lineTo(x + Math.cos(p.facing) * 16, y + Math.sin(p.facing) * 16);
+    g.moveTo(ent.serverX, ent.serverY);
+    g.lineTo(ent.serverX + Math.cos(p.facing) * 16, ent.serverY + Math.sin(p.facing) * 16);
     g.strokePath();
-    // HP bar
     const w = 24, h = 3;
     g.fillStyle(0x0a0d12, 0.7);
-    g.fillRect(x - w / 2, y - 22, w, h);
+    g.fillRect(ent.serverX - w / 2, ent.serverY - 22, w, h);
     g.fillStyle(p.hp > 50 ? 0x6ee7b7 : p.hp > 20 ? 0xfbbf24 : 0xef4444, 1);
-    g.fillRect(x - w / 2, y - 22, w * Math.max(0, p.hp / 100), h);
+    g.fillRect(ent.serverX - w / 2, ent.serverY - 22, w * Math.max(0, p.hp / 100), h);
   }
 
   private removePlayer(id: string) {
@@ -316,20 +336,18 @@ export class GameScene extends Phaser.Scene {
   private drawGuard(ent: RenderEntity, g: any) {
     const gfx = ent.gfx;
     gfx.clear();
-    const x = ent.serverX, y = ent.serverY;
     let color = 0xef4444;
     if (g.phase === "patrol") color = 0xcbd5e1;
     else if (g.phase === "suspicious" || g.phase === "investigate") color = 0xfbbf24;
     else if (g.phase === "chase") color = 0xef4444;
     else if (g.phase === "search") color = 0xf97316;
     gfx.fillStyle(color, 1);
-    gfx.fillRect(x - 10, y - 10, 20, 20);
+    gfx.fillRect(ent.serverX - 10, ent.serverY - 10, 20, 20);
     gfx.lineStyle(2, 0x0a0d12, 1);
-    gfx.strokeRect(x - 10, y - 10, 20, 20);
-    // Facing tick
+    gfx.strokeRect(ent.serverX - 10, ent.serverY - 10, 20, 20);
     gfx.beginPath();
-    gfx.moveTo(x, y);
-    gfx.lineTo(x + Math.cos(g.facing) * 14, y + Math.sin(g.facing) * 14);
+    gfx.moveTo(ent.serverX, ent.serverY);
+    gfx.lineTo(ent.serverX + Math.cos(g.facing) * 14, ent.serverY + Math.sin(g.facing) * 14);
     gfx.strokePath();
   }
 
@@ -348,9 +366,9 @@ export class GameScene extends Phaser.Scene {
     };
     const color = colors[l.tier] ?? 0xcbd5e1;
     g.fillStyle(color, 1);
-    g.fillCircle(0, 0, 6);
+    g.fillCircle(0, 0, l.tier === "objective" ? 9 : 6);
     g.lineStyle(2, 0x0a0d12, 1);
-    g.strokeCircle(0, 0, 6);
+    g.strokeCircle(0, 0, l.tier === "objective" ? 9 : 6);
     c.add(g);
     this.tweens.add({ targets: c, scale: { from: 1.0, to: 1.2 }, yoyo: true, repeat: -1, duration: 800 });
     this.loot.set(id, c);
@@ -379,7 +397,6 @@ export class GameScene extends Phaser.Scene {
       this.time.delayedCall(150, () => this.attachCamera());
       return;
     }
-    // Use a dummy follow object so camera follows lerped position
     const follow = this.add.rectangle(me.serverX, me.serverY, 1, 1, 0xffffff, 0).setVisible(false);
     (this as any)._cameraTarget = follow;
     this.cameras.main.startFollow(follow, true, 0.15, 0.15);
@@ -387,20 +404,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private interpolateEntities(deltaMs: number) {
-    const dt = Math.min(deltaMs / 100, 1); // ~100ms interp window
-    const apply = (e: RenderEntity, drawFn: () => void) => {
-      e.lerpT = Math.min(1, e.lerpT + dt);
-      const x = e.prevX + (e.serverX - e.prevX) * e.lerpT;
-      const y = e.prevY + (e.serverY - e.prevY) * e.lerpT;
-      e.gfx.x = x - e.serverX; e.gfx.y = y - e.serverY;
-    };
-    // Update player nametags
+    const dt = Math.min(deltaMs / 100, 1);
     this.players.forEach((e, id) => {
       e.lerpT = Math.min(1, e.lerpT + dt);
       const x = e.prevX + (e.serverX - e.prevX) * e.lerpT;
       const y = e.prevY + (e.serverY - e.prevY) * e.lerpT;
       if (e.nameTag) { e.nameTag.x = x; e.nameTag.y = y - 24; }
-      // For player drawing, redraw at lerped position
       e.gfx.x = (x - e.serverX);
       e.gfx.y = (y - e.serverY);
       if (id === this.myId) {
@@ -459,6 +468,24 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private drawInteractionProgress() {
+    this.interactingArc.clear();
+    const me = (this.room.state as any).players?.get?.(this.myId);
+    if (!me) return;
+    const now = Date.now();
+    if (me.interactingUntil <= now) return;
+    const total = 1500; // rough — server defines exact pickup time
+    const remaining = me.interactingUntil - now;
+    const t = 1 - Math.min(1, remaining / total);
+    const r = 22;
+    const x = me.x + (this.players.get(this.myId)?.gfx.x ?? 0);
+    const y = me.y + (this.players.get(this.myId)?.gfx.y ?? 0);
+    this.interactingArc.lineStyle(3, 0x6ee7b7, 0.9);
+    this.interactingArc.beginPath();
+    this.interactingArc.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * t, false);
+    this.interactingArc.strokePath();
+  }
+
   private handleEvent(ev: any) {
     if (ev.t === "ping") {
       const c = this.add.container(ev.x, ev.y).setDepth(40);
@@ -472,10 +499,13 @@ export class GameScene extends Phaser.Scene {
       c.add(g);
       this.tweens.add({ targets: c, scale: { from: 0.5, to: 2.5 }, alpha: { from: 1, to: 0 }, duration: 1400, onComplete: () => c.destroy() });
       this.pingMarkers.push({ gfx: c, until: Date.now() + 1500 });
+      this.sfx.play("ping");
     } else if (ev.t === "spotted") {
       this.cameras.main.shake(120, 0.005);
+      this.sfx.play("alert");
     } else if (ev.t === "alarm_raised") {
       this.cameras.main.flash(180, 220, 60, 60);
+      this.sfx.play("alarm");
     } else if (ev.t === "loot_picked") {
       const me = this.players.get(ev.playerId);
       if (me) {
@@ -484,6 +514,11 @@ export class GameScene extends Phaser.Scene {
         }).setOrigin(0.5).setDepth(60);
         this.tweens.add({ targets: txt, y: txt.y - 30, alpha: 0, duration: 1000, onComplete: () => txt.destroy() });
       }
+      this.sfx.play("loot");
+    } else if (ev.t === "ability_used") {
+      this.sfx.play("ability");
+    } else if (ev.t === "door_breached") {
+      this.sfx.play("breach");
     }
   }
 
@@ -497,6 +532,6 @@ export class GameScene extends Phaser.Scene {
   private handleEnd() {
     const s = this.room.state as any;
     this.scene.stop("HUD");
-    this.scene.launch("End", { success: s.phase === "ended", score: s.score });
+    this.scene.launch("End", { success: s.extractedCount > 0, score: s.score });
   }
 }
