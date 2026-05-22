@@ -1,144 +1,158 @@
-# Native Mobile (Android APK + iOS IPA)
+# Native Mobile (Android + iOS) — Local Development
 
-The game ships as a real native mobile app via **Capacitor 6**. Same TypeScript codebase → native Android `.apk` / `.aab` and iOS `.ipa`. No engine port.
+Build real **Android APK** and **iOS** apps from the same Vite/Phaser client via **Capacitor 6**. Run the multiplayer server on your Mac; phones on the same Wi‑Fi connect to it.
 
-What's wired up for you:
-- Landscape orientation lock (native plugin)
-- Status bar hidden + dark style
-- Splash screen with brand background
-- Status bar safe-area handled (via `viewport-fit=cover`)
-- iOS rubber-band scroll suppressed
-- Multi-touch (4 pointers) confirmed working through WKWebView and Android WebView
+## 1. One-time prerequisites
 
-## One-time prerequisites
+### Everyone
+- **Node 20+** and repo deps: `npm install --workspaces --include-workspace-root`
 
-### For Android
-- **JDK 17** (`brew install openjdk@17` on Mac, `apt install openjdk-17-jdk` on Linux)
-- **Android Studio** (latest) + Android SDK Platform 34
-- `ANDROID_HOME` env var pointing to the SDK location
+### Android
+- **JDK 17** — `brew install openjdk@17` then add to PATH
+- **Android Studio** (latest) + SDK Platform 34
+- `ANDROID_HOME` set (Android Studio → Settings → SDK → path, usually `~/Library/Android/sdk`)
 
-### For iOS
-- **Mac with macOS 13+** (Apple silicon or Intel)
-- **Xcode 15+**
-- **CocoaPods**: `sudo gem install cocoapods` (or `brew install cocoapods`)
-- An Apple Developer account for device deploy / TestFlight (free tier works for local testing)
+### iOS (Mac only)
+- **Full Xcode** from the App Store (Command Line Tools alone is not enough)
+- After install: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`
+- **CocoaPods**: `brew install cocoapods` or `sudo gem install cocoapods`
+- Apple ID in Xcode for signing (free account works for your own device)
 
-## Configure your server endpoint
+## 2. Run the game server locally
 
-Before building, point the app at your production multiplayer server:
+From repo root:
 
 ```bash
-# in /client
-echo "VITE_SERVER_URL=wss://your-server.example.com" > .env.local
+npm run dev
 ```
 
-If you skip this, the app will try `ws://<hostname>:2567` at runtime, which is fine for LAN testing but **won't work from a phone on cellular**.
+- Server: `http://localhost:2567` (WebSocket on same port)
+- Browser client: `http://localhost:5173` — open multiple tabs to test multiplayer
 
-**Don't have a hosted server yet?** Deploy it in 60 seconds:
+Server only:
+
 ```bash
-# from repo root
-npm run deploy:fly
-# → prints "wss://blackout-protocol.fly.dev"
+npm run dev:server
 ```
-Then use that URL above. Full deploy guide: [DEPLOY.md](./DEPLOY.md).
 
-## Build Android APK
+## 3. Point the mobile app at your Mac (same Wi‑Fi)
+
+Phones cannot use `localhost`. Auto-detect your LAN IP and bake it into the client build:
+
+```bash
+npm run mobile:env
+# writes client/.env.local → VITE_SERVER_URL=ws://192.168.x.x:2567
+```
+
+Or set it manually (see `client/.env.local.example`).
+
+Keep **`npm run dev:server`** running on the Mac while testing on a device.
+
+## 4. Build the web bundle + sync to native projects
+
+First time only — native projects are already in `client/android` and `client/ios`. If you deleted them:
 
 ```bash
 cd client
-npm run build              # produces dist/ with the right server URL baked in
-npm run cap:add:android    # one-time: scaffolds android/ project
-npm run cap:sync:android   # copies dist + plugins into android/
-npm run cap:open:android   # opens Android Studio → hit Run, or Build > Build APK
+npm run cap:add:android   # once
+npm run cap:add:ios       # once (needs Xcode + CocoaPods)
 ```
 
-To produce an installable APK from the command line (after `cap:sync`):
+Every time you change client code or `.env.local`:
+
+```bash
+npm run mobile:build       # Android sync (works without Xcode)
+npm run mobile:build:ios   # iOS sync (needs Xcode + CocoaPods)
+```
+
+## 5. Android APK
+
+```bash
+npm run mobile:open:android
+```
+
+In **Android Studio**: Run on a device/emulator, or **Build → Build APK**.
+
+Command line (after `mobile:build`):
 
 ```bash
 cd client/android
-./gradlew assembleDebug    # → android/app/build/outputs/apk/debug/app-debug.apk
-./gradlew assembleRelease  # signed release — see Android signing below
+./gradlew assembleDebug
+# → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### Android signing (release)
+Install on a phone: enable USB debugging, or copy the APK and open it.
+
+`usesCleartextTraffic` is enabled so `ws://` to your LAN IP works in debug builds.
+
+## 6. iOS app
+
+Finish iOS setup once (if `cap add ios` warned about pods):
 
 ```bash
-keytool -genkey -v -keystore blackout.keystore \
-  -alias blackout -keyalg RSA -keysize 2048 -validity 10000
+cd client/ios/App
+pod install
+cd ../../..
+npm run mobile:open:ios
 ```
 
-Add to `client/android/key.properties`:
-```
-storePassword=...
-keyPassword=...
-keyAlias=blackout
-storeFile=../../blackout.keystore
-```
+In **Xcode**:
+1. Open the workspace (`.xcworkspace` under `client/ios/App`)
+2. **Signing & Capabilities** → select your Team
+3. Choose a device or simulator → **Run** (▶)
 
-Then `./gradlew bundleRelease` produces `app/build/outputs/bundle/release/app-release.aab` for the Play Store.
+`NSAllowsLocalNetworking` is set so `ws://` to your LAN IP works on device.
 
-## Build iOS IPA
+Free Apple ID: install on your own device for ~7 days. Paid developer account for TestFlight / App Store.
+
+## 7. Faster iteration (live reload on device)
 
 ```bash
-cd client
-npm run build
-npm run cap:add:ios        # one-time: scaffolds ios/ project (requires CocoaPods)
-npm run cap:sync:ios
-npm run cap:open:ios       # opens Xcode
-```
+# Terminal 1 — server
+npm run dev:server
 
-Then in Xcode:
-1. Select target → Signing & Capabilities → pick your team
-2. Product → Destination → pick a device or simulator
-3. Product → Archive (for App Store / TestFlight)
-4. Window → Organizer → Distribute App
+# Terminal 2 — Vite on LAN
+cd client && npm run dev   # 0.0.0.0:5173
 
-Free Apple ID lets you side-load to a connected device for 7 days. Paid developer account ($99/yr) lets you ship to TestFlight / App Store.
-
-## Live-reload from your desktop (faster iteration)
-
-```bash
-# 1. Start the Vite dev server bound to your LAN
-cd client
-npm run dev   # listens on 0.0.0.0:5173
-
-# 2. Find your machine's LAN IP (e.g. 192.168.1.42)
-# 3. In capacitor.config.ts uncomment the server.url block, OR run:
+# Terminal 3 — point Capacitor at Vite (replace IP)
 CAP_DEV_URL=http://192.168.1.42:5173 npm run cap:sync:android
-npm run cap:open:android   # Run on device — it loads from your laptop in real time
+npm run cap:open:android
 ```
 
-The same trick works for iOS. Code changes auto-reload on the phone.
+Uncomment `server.url` / `cleartext` in `client/capacitor.config.ts` if you prefer config over env.
 
-## Update flow (after the first build)
+Same flow works for iOS with `cap:sync:ios` and `cap:open:ios`.
+
+## 8. Update flow (after the first build)
 
 ```bash
-# every time you change client code:
-npm run build && npx cap sync
-# then re-run from Android Studio / Xcode (or ./gradlew assembleDebug)
+npm run mobile:build
+# Re-run from Android Studio / Xcode, or ./gradlew assembleDebug
 ```
 
-## Native plugins included
+## Troubleshooting
 
-| Plugin | Purpose | Native effect |
-| --- | --- | --- |
-| `@capacitor/status-bar` | Hide status bar, dark style | Maximizes immersive screen real estate |
-| `@capacitor/splash-screen` | Branded boot screen | Eliminates white flash during JS load |
-| `@capacitor/screen-orientation` | Lock landscape | Required for tactical top-down view |
+| Problem | Fix |
+| --- | --- |
+| App can't connect on phone | Same Wi‑Fi as Mac; `npm run mobile:env` again; server running (`npm run dev:server`) |
+| `Cannot find module '@capacitor/...'` | `npm install --workspaces --include-workspace-root` from repo root |
+| Android: no Java | Install JDK 17, open project in Android Studio |
+| iOS: `xcodebuild` / pod errors | Install full Xcode, `xcode-select -s ...`, `pod install` in `client/ios/App` |
+| iOS blocks WebSocket | Use LAN `ws://` with `NSAllowsLocalNetworking` (already set); production needs `wss://` |
 
-All native plugin calls live in `client/src/native/Native.ts` and gracefully no-op on web. So `npm run dev` still works in a browser without any Capacitor runtime.
+## Native plugins
 
-## File size
+| Plugin | Purpose |
+| --- | --- |
+| `@capacitor/status-bar` | Hide status bar, dark style |
+| `@capacitor/splash-screen` | Branded boot screen |
+| `@capacitor/screen-orientation` | Lock landscape |
 
-- Android `.apk` (debug, unsigned): ~7 MB
-- Android `.aab` (release, signed): ~4 MB after Play Store delivery
-- iOS `.ipa` (release): ~6 MB
+Calls live in `client/src/native/Native.ts` and no-op in the browser.
 
-Tiny because the game is procedurally rendered — no sprite atlases, no audio files.
+## File size (approx.)
 
-## Known platform notes
+- Android debug APK: ~7 MB  
+- iOS release IPA: ~6 MB  
 
-- **iOS:** WKWebView is strict about WebSocket from non-HTTPS origins. **Use WSS in production** (the `wss://` scheme). For LAN dev, the live-reload flow above works because Capacitor whitelists the dev URL.
-- **Android:** WebView v74+ recommended. Should be safe on any device running Android 7.0 (API 24) or higher.
-- **Battery:** WebSocket idle + Phaser RAF render. Roughly comparable to a video call in power draw.
-- **Audio autoplay:** Both platforms require a tap to start audio. We hook into the first pointer-down to unlock the WebAudio context.
+Procedural graphics — no large asset bundles.
