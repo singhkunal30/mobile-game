@@ -7,8 +7,19 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
+    "cap:init": "cap init \"Blackout Protocol\" com.blackout.protocol --web-dir dist",
     "cap:add:android": "cap add android",
-    "cap:sync": "cap sync"
+    "cap:add:ios": "cap add ios",
+    "cap:sync": "cap sync",
+    "cap:sync:android": "cap sync android",
+    "cap:sync:ios": "cap sync ios",
+    "cap:open:android": "cap open android",
+    "cap:open:ios": "cap open ios",
+    "cap:run:android": "cap run android",
+    "cap:run:ios": "cap run ios",
+    "mobile:build": "npm run build && cap sync",
+    "android:build": "npm run build && cap sync android && cap open android",
+    "ios:build": "npm run build && cap sync ios && cap open ios"
   },
   "dependencies": {
     "@blackout/shared": "*",
@@ -16,8 +27,13 @@
     "phaser": "^3.80.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^6.1.2",
     "@capacitor/cli": "^6.1.2",
     "@capacitor/core": "^6.1.2",
+    "@capacitor/ios": "^6.1.2",
+    "@capacitor/screen-orientation": "^6.0.3",
+    "@capacitor/splash-screen": "^6.0.3",
+    "@capacitor/status-bar": "^6.0.2",
     "@types/node": "^20.12.7",
     "typescript": "^5.4.5",
     "vite": "^5.2.10"

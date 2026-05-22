@@ -141,7 +141,7 @@ Expected output:
 - **No persistent database**: stats live in memory only; add Postgres (Drizzle) or Supabase for accounts/progression.
 - **No anti-cheat**: server is fully authoritative on movement/loot/damage, so passive cheats are already neutralized. Active validation (input rate caps, position-jump detection) is a Phase 7 add-on hook in `processPlayerInputs`.
 
-## Build for production / Android
+## Build for production / Mobile
 
 ```bash
 # Production server (CommonJS, ~30 MB image)
@@ -150,15 +150,17 @@ npm run build && docker compose up --build
 # Web build
 npm run build:client
 # Output: client/dist — host on any static CDN
-
-# Native Android wrap (one-time setup needs Android Studio + JDK)
-cd client
-npm run build
-npx cap add android        # first time only
-npx cap sync
-npx cap open android       # opens Android Studio, hit Run
 ```
-Set `VITE_SERVER_URL=wss://your-server.example.com:2567` before `npm run build` to bake the server endpoint into the APK.
+
+**Native Android APK + iOS IPA:** see [MOBILE.md](./MOBILE.md) for full instructions (Capacitor 6 wraps the same TypeScript codebase into both platforms, with landscape lock, splash screen, status-bar hide, and live-reload). Short version:
+
+```bash
+cd client
+echo "VITE_SERVER_URL=wss://your-server.example.com:2567" > .env.local
+npm run build
+npm run cap:add:android && npm run cap:open:android   # Android Studio → Run
+npm run cap:add:ios     && npm run cap:open:ios       # Xcode → Run (Mac required)
+```
 
 ## Deployment
 

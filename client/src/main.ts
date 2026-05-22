@@ -4,6 +4,10 @@ import { MenuScene } from "./scenes/MenuScene";
 import { GameScene } from "./scenes/GameScene";
 import { HUDScene } from "./scenes/HUDScene";
 import { EndScene } from "./scenes/EndScene";
+import { initNative, hideSplash, isNative } from "./native/Native";
+
+// Init Capacitor native bits BEFORE Phaser boots (orientation lock, status bar).
+initNative();
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -17,9 +21,7 @@ const config: Phaser.Types.Core.GameConfig = {
     height: window.innerHeight,
   },
   fps: { target: 60, min: 30 },
-  input: {
-    activePointers: 4, // multi-touch support
-  },
+  input: { activePointers: 4 },
   render: {
     antialias: true,
     powerPreference: "high-performance",
@@ -29,8 +31,19 @@ const config: Phaser.Types.Core.GameConfig = {
 
 const game = new Phaser.Game(config);
 (window as any).__game = game;
+(window as any).__isNative = isNative;
 
-// Lock orientation hint on mobile
 window.addEventListener("resize", () => {
   game.scale.resize(window.innerWidth, window.innerHeight);
 });
+
+// Hide splash once Phaser has booted
+game.events.once(Phaser.Core.Events.READY, () => {
+  setTimeout(() => hideSplash().catch(() => {}), 200);
+});
+
+// Prevent rubber-band scroll on iOS Safari / WKWebView
+document.addEventListener("touchmove", (e) => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+document.addEventListener("gesturestart", (e) => e.preventDefault());

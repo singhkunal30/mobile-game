@@ -1,15 +1,15 @@
 import Phaser from "phaser";
+import { generateTextures } from "../render/SpriteFactory";
 
 export class BootScene extends Phaser.Scene {
   constructor() { super("Boot"); }
 
   preload() {
-    // No external assets — everything is drawn with primitives for fast iteration.
-    // Generate procedural textures so we can use particles/sprites cheaply.
     this.makePixelTexture("px", 0xffffff);
   }
 
   create() {
+    generateTextures(this);
     this.scene.start("Menu");
   }
 

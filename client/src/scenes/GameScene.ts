@@ -5,28 +5,27 @@ import { VirtualJoystick } from "../controls/VirtualJoystick";
 import { TouchButton } from "../controls/TouchButton";
 import { PingWheel } from "../controls/PingWheel";
 import { SfxManager } from "../audio/SfxManager";
-import {
-  TILE_SIZE,
-  GUARD_VIEW_RANGE, GUARD_VIEW_ANGLE_DEG,
-  ROLE_DEFS,
-} from "@blackout/shared";
+import { PlayerRenderer } from "../render/PlayerRenderer";
+import { GuardRenderer } from "../render/GuardRenderer";
+import { LightingSystem } from "../render/LightingSystem";
+import { ParticleSystem } from "../render/ParticleSystem";
+import { PALETTE } from "../render/Palette";
+import { TILE_SIZE, ALARM_LEVELS } from "@blackout/shared";
 
-const COLOR_FLOOR = 0x1a2230;
-const COLOR_FLOOR_ALT = 0x131923;
-const COLOR_WALL = 0x0a0d12;
-const COLOR_WALL_TOP = 0x2a3a4c;
-const COLOR_DOOR = 0xb45309;
-const COLOR_DOOR_OPEN = 0x854d09;
-const COLOR_EXTRACT = 0xa78bfa;
-
-interface RenderEntity {
-  gfx: Phaser.GameObjects.Graphics;
-  nameTag?: Phaser.GameObjects.Text;
-  visionCone?: Phaser.GameObjects.Graphics;
+interface PlayerEntity {
+  renderer: PlayerRenderer;
   prevX: number; prevY: number;
   serverX: number; serverY: number;
-  facing: number;
   lerpT: number;
+  lastFootstepAt: number;
+}
+
+interface GuardEntity {
+  renderer: GuardRenderer;
+  prevX: number; prevY: number;
+  serverX: number; serverY: number;
+  lerpT: number;
+  lastPhase: string;
 }
 
 export class GameScene extends Phaser.Scene {
@@ -37,17 +36,18 @@ export class GameScene extends Phaser.Scene {
   private sprintBtn!: TouchButton;
   private pingWheel!: PingWheel;
   private sfx!: SfxManager;
+  private lighting!: LightingSystem;
+  private particles!: ParticleSystem;
 
   private mapLayer!: Phaser.GameObjects.Graphics;
-  private overlayLayer!: Phaser.GameObjects.Graphics;
-  private fxLayer!: Phaser.GameObjects.Container;
-
-  private players = new Map<string, RenderEntity>();
-  private guards = new Map<string, RenderEntity>();
-  private loot = new Map<string, Phaser.GameObjects.Container>();
-  private doors = new Map<string, Phaser.GameObjects.Graphics>();
   private extractGfx!: Phaser.GameObjects.Graphics;
   private extractProgressGfx!: Phaser.GameObjects.Graphics;
+  private interactingArc!: Phaser.GameObjects.Graphics;
+
+  private players = new Map<string, PlayerEntity>();
+  private guards = new Map<string, GuardEntity>();
+  private loot = new Map<string, Phaser.GameObjects.Container>();
+  private doors = new Map<string, Phaser.GameObjects.Graphics>();
   private pingMarkers: { gfx: Phaser.GameObjects.Container; until: number }[] = [];
 
   private mapTiles: string[] = [];
@@ -55,27 +55,24 @@ export class GameScene extends Phaser.Scene {
   private mapH = 0;
   private myId: string = "";
   private sprintHold = false;
-  private interactingArc!: Phaser.GameObjects.Graphics;
-
-  // Prediction (Phase 7 hook): we keep the last sent input dir so we can
-  // pre-extrapolate the local player visually between server snapshots.
-  private predictedDx = 0;
-  private predictedDy = 0;
 
   constructor() { super("Game"); }
 
   create() {
     this.room = NetworkManager.instance.room!;
     this.myId = this.room.sessionId;
-    this.cameras.main.setBackgroundColor("#0a0d12");
+    this.cameras.main.setBackgroundColor("#070a0e");
+
     this.mapLayer = this.add.graphics().setDepth(0);
-    this.overlayLayer = this.add.graphics().setDepth(1);
-    this.fxLayer = this.add.container(0, 0).setDepth(50);
     this.extractGfx = this.add.graphics().setDepth(2);
     this.extractProgressGfx = this.add.graphics().setDepth(3);
     this.interactingArc = this.add.graphics().setDepth(60);
 
     this.sfx = new SfxManager(this);
+    this.lighting = new LightingSystem(this);
+    this.particles = new ParticleSystem(this);
+    this.particles.init();
+
     this.pingWheel = new PingWheel(this);
     this.setupTouchUI();
 
@@ -112,14 +109,11 @@ export class GameScene extends Phaser.Scene {
 
     this.time.delayedCall(300, () => this.attachCamera());
 
-    // Right-side tap (above buttons) opens ping wheel at world cursor
     this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
       if (p.x > this.scale.width * 0.55 && p.y < this.scale.height * 0.5) {
         this.pingWheel.open(p.x, p.y, p.worldX, p.worldY);
       }
     });
-
-    // Resume the audio context on first user gesture (mobile autoplay policy)
     this.input.once("pointerdown", () => this.sfx.unlock());
   }
 
@@ -151,7 +145,6 @@ export class GameScene extends Phaser.Scene {
       this.sprintBtn.setPosition(W - 70, H - 180);
     });
 
-    // Keyboard fallback for desktop testing
     this.input.keyboard?.on("keydown-E", () => this.queueInteract());
     this.input.keyboard?.on("keydown-Q", () => this.queueAbility());
     this.input.keyboard?.on("keydown-SHIFT", () => { this.sprintHold = true; this.sprintBtn.setLabel("SPRT*"); });
@@ -178,10 +171,11 @@ export class GameScene extends Phaser.Scene {
 
   update(_time: number, deltaMs: number) {
     this.sendInput();
-    this.interpolateEntities(deltaMs);
-    this.drawGuardVision();
+    this.updateEntities(deltaMs);
+    this.updateLighting(deltaMs);
     this.drawExtractionProgress();
     this.drawInteractionProgress();
+    this.spawnFootsteps();
     this.cleanupPings(_time);
 
     const now = Date.now();
@@ -203,8 +197,6 @@ export class GameScene extends Phaser.Scene {
       const k = this.kbVec();
       dx = k.dx; dy = k.dy;
     }
-    this.predictedDx = dx;
-    this.predictedDy = dy;
     NetworkManager.instance.sendInput({
       dx, dy,
       sprint: this.sprintHold,
@@ -225,13 +217,24 @@ export class GameScene extends Phaser.Scene {
     this.mapTiles = s.map.tiles.map((r: any) => r.row);
     this.drawMap();
 
-    this.extractGfx.clear();
-    this.extractGfx.fillStyle(COLOR_EXTRACT, 0.22);
-    this.extractGfx.fillRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
-    this.extractGfx.lineStyle(2, COLOR_EXTRACT, 0.8);
-    this.extractGfx.strokeRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
+    const worldW = this.mapW * TILE_SIZE;
+    const worldH = this.mapH * TILE_SIZE;
+    this.lighting.init(worldW, worldH, s.modifier ?? "");
 
-    this.cameras.main.setBounds(0, 0, this.mapW * TILE_SIZE, this.mapH * TILE_SIZE);
+    this.extractGfx.clear();
+    this.extractGfx.fillStyle(PALETTE.extract, 0.22);
+    this.extractGfx.fillRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
+    this.extractGfx.lineStyle(2, PALETTE.extract, 0.8);
+    this.extractGfx.strokeRect(s.map.extractX, s.map.extractY, s.map.extractW * TILE_SIZE, s.map.extractH * TILE_SIZE);
+    // Extract glow corners
+    const ex = s.map.extractX, ey = s.map.extractY;
+    const ew = s.map.extractW * TILE_SIZE, eh = s.map.extractH * TILE_SIZE;
+    this.extractGfx.fillStyle(PALETTE.extractGlow, 0.5);
+    [[ex, ey], [ex + ew, ey], [ex, ey + eh], [ex + ew, ey + eh]].forEach(([cx, cy]) => {
+      this.extractGfx.fillCircle(cx, cy, 6);
+    });
+
+    this.cameras.main.setBounds(0, 0, worldW, worldH);
   }
 
   private drawMap() {
@@ -242,13 +245,16 @@ export class GameScene extends Phaser.Scene {
         const px = x * TILE_SIZE;
         const py = y * TILE_SIZE;
         if (c === "#") {
-          this.mapLayer.fillStyle(COLOR_WALL, 1);
+          this.mapLayer.fillStyle(PALETTE.wall, 1);
           this.mapLayer.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-          this.mapLayer.fillStyle(COLOR_WALL_TOP, 1);
-          this.mapLayer.fillRect(px, py, TILE_SIZE, 4);
+          this.mapLayer.fillStyle(PALETTE.wallTop, 1);
+          this.mapLayer.fillRect(px, py, TILE_SIZE, 5);
+          // Side shadow
+          this.mapLayer.fillStyle(PALETTE.wallShadow, 0.7);
+          this.mapLayer.fillRect(px, py + TILE_SIZE - 3, TILE_SIZE, 3);
         } else {
           const alt = (x + y) % 2 === 0;
-          this.mapLayer.fillStyle(alt ? COLOR_FLOOR : COLOR_FLOOR_ALT, 1);
+          this.mapLayer.fillStyle(alt ? PALETTE.floor : PALETTE.floorAlt, 1);
           this.mapLayer.fillRect(px, py, TILE_SIZE, TILE_SIZE);
           this.mapLayer.lineStyle(1, 0x0a0d12, 0.15);
           this.mapLayer.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
@@ -257,104 +263,66 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ===== Player / guard / loot / door =====
+
   private addPlayer(p: any, id: string) {
-    const gfx = this.add.graphics().setDepth(20);
-    const tag = this.add.text(p.x, p.y - 22, p.name + " (" + p.role + ")", {
-      fontFamily: "ui-sans-serif, system-ui", fontSize: "10px", color: "#cbd5e1",
-    }).setOrigin(0.5).setDepth(21);
-    const ent: RenderEntity = {
-      gfx, nameTag: tag,
+    const renderer = new PlayerRenderer(this, {
+      role: p.role, facing: p.facing, status: p.status, hp: p.hp,
+      vx: p.vx, vy: p.vy, name: p.name, abilityCdUntil: p.abilityCdUntil,
+      isLocal: id === this.myId,
+    });
+    const ent: PlayerEntity = {
+      renderer,
       prevX: p.x, prevY: p.y,
       serverX: p.x, serverY: p.y,
-      facing: p.facing, lerpT: 1,
+      lerpT: 1,
+      lastFootstepAt: 0,
     };
     this.players.set(id, ent);
-    this.drawPlayer(ent, p, id === this.myId);
-
     p.onChange(() => {
       ent.prevX = ent.serverX;
       ent.prevY = ent.serverY;
       ent.serverX = p.x;
       ent.serverY = p.y;
-      ent.facing = p.facing;
       ent.lerpT = 0;
-      this.drawPlayer(ent, p, id === this.myId);
-      if (tag) tag.setText(p.name + (p.status === "downed" ? " ⚠" : p.status === "extracted" ? " ✔" : ""));
     });
-  }
-
-  private drawPlayer(ent: RenderEntity, p: any, isLocal: boolean) {
-    const g = ent.gfx;
-    g.clear();
-    if (p.status === "extracted") return;
-    const fill = isLocal ? 0x6ee7b7 : 0x60a5fa;
-    g.fillStyle(p.status === "downed" ? 0x64748b : fill, 0.95);
-    g.fillCircle(ent.serverX, ent.serverY, 12);
-    g.lineStyle(2, 0x0a0d12, 1);
-    g.strokeCircle(ent.serverX, ent.serverY, 12);
-    g.lineStyle(2, 0x0a0d12, 1);
-    g.beginPath();
-    g.moveTo(ent.serverX, ent.serverY);
-    g.lineTo(ent.serverX + Math.cos(p.facing) * 16, ent.serverY + Math.sin(p.facing) * 16);
-    g.strokePath();
-    const w = 24, h = 3;
-    g.fillStyle(0x0a0d12, 0.7);
-    g.fillRect(ent.serverX - w / 2, ent.serverY - 22, w, h);
-    g.fillStyle(p.hp > 50 ? 0x6ee7b7 : p.hp > 20 ? 0xfbbf24 : 0xef4444, 1);
-    g.fillRect(ent.serverX - w / 2, ent.serverY - 22, w * Math.max(0, p.hp / 100), h);
   }
 
   private removePlayer(id: string) {
     const e = this.players.get(id);
-    e?.gfx.destroy();
-    e?.nameTag?.destroy();
+    e?.renderer.destroy();
     this.players.delete(id);
   }
 
   private addGuard(g: any, id: string) {
-    const gfx = this.add.graphics().setDepth(15);
-    const cone = this.add.graphics().setDepth(4).setAlpha(0.4);
-    const ent: RenderEntity = {
-      gfx, visionCone: cone,
+    const renderer = new GuardRenderer(this);
+    const ent: GuardEntity = {
+      renderer,
       prevX: g.x, prevY: g.y,
       serverX: g.x, serverY: g.y,
-      facing: g.facing, lerpT: 1,
+      lerpT: 1,
+      lastPhase: g.phase,
     };
     this.guards.set(id, ent);
-    this.drawGuard(ent, g);
     g.onChange(() => {
       ent.prevX = ent.serverX;
       ent.prevY = ent.serverY;
       ent.serverX = g.x;
       ent.serverY = g.y;
-      ent.facing = g.facing;
+      // Phase change FX
+      if (g.phase !== ent.lastPhase) {
+        if (g.phase === "chase" && ent.lastPhase !== "chase") {
+          this.particles.alarmSparks(g.x, g.y - 20);
+        }
+        ent.lastPhase = g.phase;
+      }
       ent.lerpT = 0;
-      this.drawGuard(ent, g);
     });
-  }
-
-  private drawGuard(ent: RenderEntity, g: any) {
-    const gfx = ent.gfx;
-    gfx.clear();
-    let color = 0xef4444;
-    if (g.phase === "patrol") color = 0xcbd5e1;
-    else if (g.phase === "suspicious" || g.phase === "investigate") color = 0xfbbf24;
-    else if (g.phase === "chase") color = 0xef4444;
-    else if (g.phase === "search") color = 0xf97316;
-    gfx.fillStyle(color, 1);
-    gfx.fillRect(ent.serverX - 10, ent.serverY - 10, 20, 20);
-    gfx.lineStyle(2, 0x0a0d12, 1);
-    gfx.strokeRect(ent.serverX - 10, ent.serverY - 10, 20, 20);
-    gfx.beginPath();
-    gfx.moveTo(ent.serverX, ent.serverY);
-    gfx.lineTo(ent.serverX + Math.cos(g.facing) * 14, ent.serverY + Math.sin(g.facing) * 14);
-    gfx.strokePath();
   }
 
   private removeGuard(id: string) {
     const e = this.guards.get(id);
-    e?.gfx.destroy();
-    e?.visionCone?.destroy();
+    e?.renderer.destroy();
     this.guards.delete(id);
   }
 
@@ -365,12 +333,20 @@ export class GameScene extends Phaser.Scene {
       common: 0x94a3b8, rare: 0x60a5fa, elite: 0xa78bfa, objective: 0xfbbf24,
     };
     const color = colors[l.tier] ?? 0xcbd5e1;
+    const r = l.tier === "objective" ? 9 : 6;
+    // Outer ring
+    g.lineStyle(2, color, 0.9);
+    g.strokeCircle(0, 0, r + 4);
     g.fillStyle(color, 1);
-    g.fillCircle(0, 0, l.tier === "objective" ? 9 : 6);
+    g.fillCircle(0, 0, r);
     g.lineStyle(2, 0x0a0d12, 1);
-    g.strokeCircle(0, 0, l.tier === "objective" ? 9 : 6);
+    g.strokeCircle(0, 0, r);
     c.add(g);
+    // Pulse + spin glints around objectives
     this.tweens.add({ targets: c, scale: { from: 1.0, to: 1.2 }, yoyo: true, repeat: -1, duration: 800 });
+    if (l.tier === "objective" || l.tier === "elite") {
+      this.tweens.add({ targets: c, rotation: Math.PI * 2, duration: 6000, repeat: -1 });
+    }
     this.loot.set(id, c);
     l.onChange(() => {
       if (l.taken) c.setAlpha(0.0);
@@ -382,10 +358,21 @@ export class GameScene extends Phaser.Scene {
     this.doors.set(id, g);
     const draw = () => {
       g.clear();
-      const color = d.open ? COLOR_DOOR_OPEN : (d.locked ? 0x991b1b : COLOR_DOOR);
+      const color = d.open ? PALETTE.doorOpen : (d.locked ? PALETTE.doorLocked : PALETTE.door);
       g.fillStyle(color, d.open ? 0.4 : 0.95);
-      if (d.horizontal) g.fillRect(d.x - TILE_SIZE / 2, d.y - 4, TILE_SIZE, 8);
-      else g.fillRect(d.x - 4, d.y - TILE_SIZE / 2, 8, TILE_SIZE);
+      if (d.horizontal) {
+        g.fillRect(d.x - TILE_SIZE / 2, d.y - 4, TILE_SIZE, 8);
+        g.lineStyle(1, 0x0a0d12, 0.7);
+        g.strokeRect(d.x - TILE_SIZE / 2, d.y - 4, TILE_SIZE, 8);
+      } else {
+        g.fillRect(d.x - 4, d.y - TILE_SIZE / 2, 8, TILE_SIZE);
+        g.lineStyle(1, 0x0a0d12, 0.7);
+        g.strokeRect(d.x - 4, d.y - TILE_SIZE / 2, 8, TILE_SIZE);
+      }
+      if (d.locked && !d.open) {
+        g.fillStyle(0xfbbf24, 1);
+        g.fillCircle(d.x, d.y, 2);
+      }
     };
     draw();
     d.onChange(() => draw());
@@ -399,57 +386,86 @@ export class GameScene extends Phaser.Scene {
     }
     const follow = this.add.rectangle(me.serverX, me.serverY, 1, 1, 0xffffff, 0).setVisible(false);
     (this as any)._cameraTarget = follow;
-    this.cameras.main.startFollow(follow, true, 0.15, 0.15);
+    this.cameras.main.startFollow(follow, true, 0.18, 0.18);
     this.cameras.main.setZoom(1.0);
   }
 
-  private interpolateEntities(deltaMs: number) {
+  // ===== Update =====
+
+  private updateEntities(deltaMs: number) {
     const dt = Math.min(deltaMs / 100, 1);
+    const s = this.room.state as any;
     this.players.forEach((e, id) => {
       e.lerpT = Math.min(1, e.lerpT + dt);
       const x = e.prevX + (e.serverX - e.prevX) * e.lerpT;
       const y = e.prevY + (e.serverY - e.prevY) * e.lerpT;
-      if (e.nameTag) { e.nameTag.x = x; e.nameTag.y = y - 24; }
-      e.gfx.x = (x - e.serverX);
-      e.gfx.y = (y - e.serverY);
+      const pState = s.players.get(id);
+      if (!pState) return;
+      e.renderer.update(x, y, {
+        role: pState.role,
+        facing: pState.facing,
+        status: pState.status,
+        hp: pState.hp,
+        vx: pState.vx,
+        vy: pState.vy,
+        name: pState.name,
+        abilityCdUntil: pState.abilityCdUntil,
+        isLocal: id === this.myId,
+      }, deltaMs);
       if (id === this.myId) {
         const target: any = (this as any)._cameraTarget;
         if (target) { target.x = x; target.y = y; }
       }
     });
-    this.guards.forEach((e) => {
+    this.guards.forEach((e, id) => {
       e.lerpT = Math.min(1, e.lerpT + dt);
       const x = e.prevX + (e.serverX - e.prevX) * e.lerpT;
       const y = e.prevY + (e.serverY - e.prevY) * e.lerpT;
-      e.gfx.x = (x - e.serverX);
-      e.gfx.y = (y - e.serverY);
+      const g = s.guards.get(id);
+      if (!g) return;
+      e.renderer.update(x, y, {
+        phase: g.phase,
+        facing: g.facing,
+        suspicion: g.suspicion,
+      }, deltaMs);
     });
   }
 
-  private drawGuardVision() {
+  private updateLighting(deltaMs: number) {
+    if (!this.lighting || this.mapW === 0) return;
     const s = this.room.state as any;
-    this.guards.forEach((ent, id) => {
+    const me = this.players.get(this.myId);
+    if (!me) return;
+    const lerpedX = me.prevX + (me.serverX - me.prevX) * me.lerpT;
+    const lerpedY = me.prevY + (me.serverY - me.prevY) * me.lerpT;
+    const myState = s.players.get(this.myId);
+    const sprinting = myState ? Math.hypot(myState.vx, myState.vy) > 150 : false;
+    const guards: { x: number; y: number; facing: number; phase: string }[] = [];
+    this.guards.forEach((e, id) => {
       const g = s.guards.get(id);
-      if (!g || !ent.visionCone) return;
-      const cone = ent.visionCone;
-      cone.clear();
-      const x = ent.serverX + ent.gfx.x;
-      const y = ent.serverY + ent.gfx.y;
-      const half = (GUARD_VIEW_ANGLE_DEG * Math.PI) / 180 / 2;
-      const r = GUARD_VIEW_RANGE;
-      let color = 0xfacc15;
-      if (g.phase === "chase") color = 0xef4444;
-      else if (g.phase === "investigate" || g.phase === "search") color = 0xf97316;
-      cone.fillStyle(color, 0.18);
-      cone.beginPath();
-      cone.moveTo(x, y);
-      const steps = 12;
-      for (let i = 0; i <= steps; i++) {
-        const a = g.facing - half + (i / steps) * (half * 2);
-        cone.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
-      }
-      cone.closePath();
-      cone.fillPath();
+      if (!g) return;
+      const gx = e.prevX + (e.serverX - e.prevX) * e.lerpT;
+      const gy = e.prevY + (e.serverY - e.prevY) * e.lerpT;
+      guards.push({ x: gx, y: gy, facing: g.facing, phase: g.phase });
+    });
+    const alarmLevel01 = (s.alarmLevel ?? 0) / ALARM_LEVELS;
+    this.lighting.update(lerpedX, lerpedY, sprinting, guards, alarmLevel01, deltaMs);
+  }
+
+  private spawnFootsteps() {
+    const now = Date.now();
+    const s = this.room.state as any;
+    this.players.forEach((e, id) => {
+      const p = s.players.get(id);
+      if (!p || p.status !== "alive") return;
+      const speed = Math.hypot(p.vx, p.vy);
+      if (speed < 60) return;
+      const interval = speed > 160 ? 220 : 360;
+      if (now - e.lastFootstepAt < interval) return;
+      const x = e.prevX + (e.serverX - e.prevX) * e.lerpT;
+      const y = e.prevY + (e.serverY - e.prevY) * e.lerpT;
+      this.particles.footstep(x, y + 8);
+      e.lastFootstepAt = now;
     });
   }
 
@@ -474,12 +490,14 @@ export class GameScene extends Phaser.Scene {
     if (!me) return;
     const now = Date.now();
     if (me.interactingUntil <= now) return;
-    const total = 1500; // rough — server defines exact pickup time
+    const total = 1500;
     const remaining = me.interactingUntil - now;
     const t = 1 - Math.min(1, remaining / total);
     const r = 22;
-    const x = me.x + (this.players.get(this.myId)?.gfx.x ?? 0);
-    const y = me.y + (this.players.get(this.myId)?.gfx.y ?? 0);
+    const ent = this.players.get(this.myId);
+    if (!ent) return;
+    const x = ent.prevX + (ent.serverX - ent.prevX) * ent.lerpT;
+    const y = ent.prevY + (ent.serverY - ent.prevY) * ent.lerpT;
     this.interactingArc.lineStyle(3, 0x6ee7b7, 0.9);
     this.interactingArc.beginPath();
     this.interactingArc.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * t, false);
@@ -500,6 +518,7 @@ export class GameScene extends Phaser.Scene {
       this.tweens.add({ targets: c, scale: { from: 0.5, to: 2.5 }, alpha: { from: 1, to: 0 }, duration: 1400, onComplete: () => c.destroy() });
       this.pingMarkers.push({ gfx: c, until: Date.now() + 1500 });
       this.sfx.play("ping");
+      this.particles.pingPop(ev.x, ev.y, color);
     } else if (ev.t === "spotted") {
       this.cameras.main.shake(120, 0.005);
       this.sfx.play("alert");
@@ -507,16 +526,21 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.flash(180, 220, 60, 60);
       this.sfx.play("alarm");
     } else if (ev.t === "loot_picked") {
-      const me = this.players.get(ev.playerId);
-      if (me) {
-        const txt = this.add.text(me.serverX, me.serverY - 30, "+" + ev.value, {
+      const ent = this.players.get(ev.playerId);
+      if (ent) {
+        const x = ent.serverX, y = ent.serverY;
+        const txt = this.add.text(x, y - 30, "+" + ev.value, {
           fontFamily: "ui-sans-serif, system-ui", fontSize: "12px", color: "#fbbf24",
+          stroke: "#0a0d12", strokeThickness: 3,
         }).setOrigin(0.5).setDepth(60);
         this.tweens.add({ targets: txt, y: txt.y - 30, alpha: 0, duration: 1000, onComplete: () => txt.destroy() });
+        this.particles.lootPickup(x, y);
       }
       this.sfx.play("loot");
     } else if (ev.t === "ability_used") {
       this.sfx.play("ability");
+      const ent = this.players.get(ev.playerId);
+      if (ent) this.particles.empBurst(ent.serverX, ent.serverY);
     } else if (ev.t === "door_breached") {
       this.sfx.play("breach");
     }
