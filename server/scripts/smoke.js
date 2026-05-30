@@ -8,9 +8,11 @@ async function run() {
   console.log("[smoke] connecting client A...");
   const roomA = await client.joinOrCreate("heist", { name: "Alpha" });
   console.log("[smoke] A joined", roomA.sessionId);
+  roomA.onMessage("welcome", () => {});
 
   const roomB = await client.joinOrCreate("heist", { name: "Bravo" });
   console.log("[smoke] B joined", roomB.sessionId);
+  roomB.onMessage("welcome", () => {});
 
   let gotMap = false;
   let gotPhase = "";
@@ -45,9 +47,14 @@ async function run() {
 
   console.log("[smoke] events received:", serverEvents);
   const roomState = roomA.state;
-  console.log("[smoke] final: phase", roomState.phase, "players", roomState.players.size, "guards", roomState.guards.size, "loot", roomState.loot.size);
+  console.log("[smoke] final: phase", roomState.phase, "players", roomState.players.size, "guards", roomState.guards.size, "loot", roomState.loot.size, "score", roomState.score);
   if (!gotMap) { console.error("FAIL: no map"); process.exit(1); }
   if (roomState.guards.size === 0) { console.error("FAIL: no guards spawned"); process.exit(1); }
+  // After fix 2: score only accrues on extraction. Random wandering shouldn't bank score.
+  if (roomState.score !== 0) {
+    console.error("FAIL: score was banked without extraction (expected 0, got " + roomState.score + ")");
+    process.exit(1);
+  }
   console.log("[smoke] PASS");
   await roomA.leave();
   await roomB.leave();

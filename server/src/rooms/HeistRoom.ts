@@ -34,7 +34,10 @@ interface PlayerRuntime {
   patrolRoutes: { x: number; y: number }[][];
 }
 
-const ROOM_OPTIONS = { mode: "default" };
+// Tunable timings for gameplay polish (kept here, not constants.ts, because
+// they're server-internal and don't need to travel to clients).
+const DOOR_TOGGLE_COOLDOWN_MS = 600;
+const ALL_DOWNED_GRACE_MS = 15_000;
 
 export class HeistRoom extends Room<HeistState> {
   maxClients = MAX_PLAYERS;
@@ -43,13 +46,13 @@ export class HeistRoom extends Room<HeistState> {
   private ai = new AIController();
   private director = new AIDirector();
   private playerRT = new Map<string, PlayerRuntime>();
+  private doorToggleAt = new Map<string, number>();
   private startCountdownAt: number = 0;
-  private lastTick: number = 0;
+  private allDownedSince: number = 0;
   private accum: number = 0;
   private fixedDt: number = SERVER_TICK_MS / 1000;
   private nextGuardId = 0;
   private nextLootId = 0;
-  private extractHoldUntil = 0;
 
   onCreate(options: any) {
     this.setState(new HeistState());
@@ -97,7 +100,6 @@ export class HeistRoom extends Room<HeistState> {
     });
 
     // Simulation loop — fixed-step
-    this.lastTick = Date.now();
     this.setSimulationInterval((delta) => this.update(delta), SERVER_TICK_MS);
   }
 
@@ -311,11 +313,11 @@ export class HeistRoom extends Room<HeistState> {
     });
     if (bestDoor) {
       const door = bestDoor as DoorState;
-      if (door.locked && p.role !== "breacher") {
-        // Can't open
-        return;
-      }
+      const lastToggle = this.doorToggleAt.get(door.id) ?? 0;
+      if (now - lastToggle < DOOR_TOGGLE_COOLDOWN_MS) return; // anti-spam
+      if (door.locked && p.role !== "breacher") return; // can't open locked door without breacher
       door.open = !door.open;
+      this.doorToggleAt.set(door.id, now);
       if (door.locked && p.role === "breacher") {
         door.locked = false;
         door.breached = true;
@@ -327,16 +329,22 @@ export class HeistRoom extends Room<HeistState> {
 
   private tickInteractions(dt: number, now: number) {
     this.state.players.forEach((p) => {
+      // A downed player can't complete a pickup that was in flight when they went down.
+      if (p.status !== "alive" && p.interactingUntil > 0) {
+        p.interactingUntil = 0;
+        p.interactingWith = "";
+        return;
+      }
       if (p.interactingUntil > 0 && now >= p.interactingUntil && p.interactingWith) {
         const l = this.state.loot.get(p.interactingWith);
         if (l && !l.taken) {
           l.taken = true;
           const def = LOOT_DEFS[l.tier as keyof typeof LOOT_DEFS] || LOOT_DEFS.common;
           const mult = this.state.modifier === "ghost" ? 2 : 1;
+          // Score is now banked on EXTRACT, not on pickup — the heist gameplay loop
+          // depends on the player actually getting out alive with what they took.
           p.carriedLoot += def.value * mult;
-          this.state.score += def.value * mult;
           this.broadcast(MSG.EVENT, { t: "loot_picked", playerId: p.id, lootId: l.id, value: def.value * mult });
-          // Looting bumps suspicion globally
           this.state.alarmHeat = Math.min(100, this.state.alarmHeat + 5);
         }
         p.interactingUntil = 0;
@@ -439,42 +447,52 @@ export class HeistRoom extends Room<HeistState> {
     const ey = this.state.map.extractY;
     const ew = this.state.map.extractW * TILE_SIZE;
     const eh = this.state.map.extractH * TILE_SIZE;
-    let alivePlayers = 0;
+    let aliveOrDowned = 0;
+    let aliveCount = 0;
     let inZone = 0;
-    let withLoot = 0;
     this.state.players.forEach((p) => {
       if (p.status === "extracted") return;
-      if (p.status === "alive") alivePlayers++;
-      if (p.status === "downed") alivePlayers++;
+      if (p.status === "alive") { aliveOrDowned++; aliveCount++; }
+      else if (p.status === "downed") aliveOrDowned++;
       const inside = p.x >= ex && p.x <= ex + ew && p.y >= ey && p.y <= ey + eh;
-      if (inside && p.status === "alive") {
-        inZone++;
-        if (p.carriedLoot > 0) withLoot++;
-      }
+      if (inside && p.status === "alive") inZone++;
     });
 
-    if (alivePlayers === 0 && this.state.phase !== "ended") {
+    // Hard wipe: nobody alive or downed left in the field.
+    if (aliveOrDowned === 0 && this.state.phase !== "ended") {
       this.endMatch(false, "Team wiped");
       return;
+    }
+
+    // Soft wipe: everyone downed for ALL_DOWNED_GRACE_MS without revive.
+    if (aliveCount === 0 && aliveOrDowned > 0) {
+      if (this.allDownedSince === 0) this.allDownedSince = now;
+      else if (now - this.allDownedSince > ALL_DOWNED_GRACE_MS && this.state.phase !== "ended") {
+        this.endMatch(false, "Team incapacitated");
+        return;
+      }
+    } else {
+      this.allDownedSince = 0;
     }
 
     // Extraction requires at least one player in the zone, and progress fills to 1.
     if (inZone > 0 && this.state.phase === "active") {
       this.state.extractProgress = Math.min(1, this.state.extractProgress + dt * (1000 / EXTRACT_HOLD_MS));
       if (this.state.extractProgress >= 1) {
-        // Extract all currently in zone
+        // Bank carried loot + extraction bonus per player who makes it out.
         this.state.players.forEach((p) => {
           const inside = p.x >= ex && p.x <= ex + ew && p.y >= ey && p.y <= ey + eh;
           if (inside && p.status === "alive") {
             p.status = "extracted";
             this.state.extractedCount++;
-            this.state.score += 500;
+            this.state.score += p.carriedLoot + 500;
+            p.carriedLoot = 0;
           }
         });
-        // Reset progress if more teammates may still arrive
+        // Reset progress for any teammates still inbound.
         this.state.extractProgress = 0;
         let anyRemaining = false;
-        this.state.players.forEach(p => { if (p.status === "alive") anyRemaining = true; });
+        this.state.players.forEach(p => { if (p.status === "alive" || p.status === "downed") anyRemaining = true; });
         if (!anyRemaining) this.endMatch(true, "Team extracted");
       }
     } else {

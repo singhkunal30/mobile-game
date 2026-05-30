@@ -88,21 +88,19 @@ export class GameScene extends Phaser.Scene {
 
     this.time.delayedCall(120, () => this.applyMap());
 
+    // Colyseus 0.15 fires onAdd retroactively for entries already in state,
+    // so no explicit forEach is needed (would cause double-renders + leaks).
     s.players.onAdd((p: any, id: string) => this.addPlayer(p, id));
     s.players.onRemove((_p: any, id: string) => this.removePlayer(id));
-    s.players.forEach((p: any, id: string) => this.addPlayer(p, id));
 
     s.guards.onAdd((g: any, id: string) => this.addGuard(g, id));
     s.guards.onRemove((_g: any, id: string) => this.removeGuard(id));
-    s.guards.forEach((g: any, id: string) => this.addGuard(g, id));
 
     s.loot.onAdd((l: any, id: string) => this.addLoot(l, id));
     s.loot.onRemove((_l: any, id: string) => { this.loot.get(id)?.destroy(); this.loot.delete(id); });
-    s.loot.forEach((l: any, id: string) => this.addLoot(l, id));
 
     s.doors.onAdd((d: any, id: string) => this.addDoor(d, id));
     s.doors.onRemove((_d: any, id: string) => { this.doors.get(id)?.destroy(); this.doors.delete(id); });
-    s.doors.forEach((d: any, id: string) => this.addDoor(d, id));
 
     NetworkManager.instance.sendReady(true);
     NetworkManager.instance.onEvent = (ev) => this.handleEvent(ev);
@@ -266,6 +264,7 @@ export class GameScene extends Phaser.Scene {
   // ===== Player / guard / loot / door =====
 
   private addPlayer(p: any, id: string) {
+    if (this.players.has(id)) return;
     const renderer = new PlayerRenderer(this, {
       role: p.role, facing: p.facing, status: p.status, hp: p.hp,
       vx: p.vx, vy: p.vy, name: p.name, abilityCdUntil: p.abilityCdUntil,
@@ -295,6 +294,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addGuard(g: any, id: string) {
+    if (this.guards.has(id)) return;
     const renderer = new GuardRenderer(this);
     const ent: GuardEntity = {
       renderer,
@@ -327,6 +327,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addLoot(l: any, id: string) {
+    if (this.loot.has(id)) return;
     const c = this.add.container(l.x, l.y).setDepth(10);
     const g = this.add.graphics();
     const colors: Record<string, number> = {
@@ -354,6 +355,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addDoor(d: any, id: string) {
+    if (this.doors.has(id)) return;
     const g = this.add.graphics().setDepth(8);
     this.doors.set(id, g);
     const draw = () => {

@@ -12,7 +12,6 @@ interface GuardMemory {
   path: { x: number; y: number }[];
   pathIdx: number;
   patrolRoute: { x: number; y: number }[];
-  patrolIdx: number;
   lastAlertTs: number;
   searchUntil: number;
   recomputePathAt: number;
@@ -28,7 +27,6 @@ export class AIController {
         path: [],
         pathIdx: 0,
         patrolRoute,
-        patrolIdx: 0,
         lastAlertTs: 0,
         searchUntil: 0,
         recomputePathAt: 0,
@@ -184,6 +182,9 @@ export class AIController {
         target.hp = 0;
         target.status = "downed";
         target.downedAt = now;
+        target.vx = 0; target.vy = 0;
+        target.interactingUntil = 0;
+        target.interactingWith = "";
         onEvent("downed", { playerId: target.id });
       }
     }
